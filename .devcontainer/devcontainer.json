@@ -1,0 +1,62 @@
+{
+"name": "doxtr-rag-dev",
+"image": "docker.io/doxtr/reactor:0.1.4",
+"forwardPorts": [
+    8519
+],
+"containerEnv": {
+    "HTTP_SERVER_PORT": "8519",
+    "TZ": "Europe/Berlin"
+},
+"runArgs": [
+    "--cap-add=NET_RAW", // used for the ping command in the tests
+    // You can add other capabilities here if needed, like "--cap-add=NET_ADMIN"
+    //"--cap-add=NET_ADMIN"
+],
+"customizations": {
+    "vscode": {
+        "extensions": [
+            "ms-python.python",
+            "ms-toolsai.jupyter",
+            "jebbs.plantuml",
+            "trond-snekvik.simple-rst",
+            "swyddfa.esbonio",
+            "mechatroner.rainbow-csv",
+            "lextudio.restructuredtext",
+            "useblocks.sphinx-needs-vscode"
+        ],
+        "settings": {
+            "editor.suggest.snippetsPreventQuickSuggestions": true,
+            "editor.suggest.matchOnWordStartOnly": true,
+            "editor.renderWhitespace": "all",
+            "python-envs.alwaysUseUv": true,
+            "restructuredtext.builtDocumentationPath": "${workspaceRoot}/build/html",
+            "restructuredtext.confPath": "${workspaceFolder}/source",
+            "restructuredtext.updateOnTextChanged": "true",
+            "restructuredtext.updateDelay": 1000,
+            "plantuml.render": "Local",
+            "plantuml.jar": "/usr/share/plantuml/plantuml.jar",
+            "python.pythonPath": "/opt/venv/bin/python",
+            "editor.tabSize": 3,
+            "[restructuredtext]": {
+                "editor.tabSize": 3
+            }
+        }
+    }
+},
+"workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/docs,type=bind",
+"workspaceFolder": "/workspaces/docs",
+// -- doxtr-rag shared Chroma data directory mount policy (requirement #22) ----
+// The shared-store writability is detected at RUNTIME from the actual mount
+// permission, NOT from the store mode. Mount the shared Chroma data dir:
+//   * read-write ("rw") to allow LOCAL shared ingestion of source/ in place;
+//   * read-only  ("ro") for query-only nodes (shared ingestion is skipped
+//     gracefully with an [INFO], the store stays queryable).
+// LOCAL_PRIVATE (.doxtr/chroma) always stays read-write.
+// For an external chromadb/chroma server, apply the same rw/ro policy to that
+// container's OWN persistent volume instead of this bind mount. Example:
+//   "mounts": [
+//     "source=/srv/doxtr/chroma_shared,target=/workspaces/docs/.doxtr/chroma_shared,type=bind,readonly"
+//   ]
+"mounts": []
+}

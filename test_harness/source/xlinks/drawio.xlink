@@ -1,0 +1,4 @@
+# xlink-section-name: Useful Projects
+drawio-home :: Draw.io :: https://draw.io/ :: dr:0001
+drawio-github-releases :: Draw.io Releases :: https://github.com/jgraph/drawio/releases
+drawio-desktop-github-releases :: Draw.io Desktop Releases :: https://github.com/jgraph/drawio-desktop/releases :: dr:0002

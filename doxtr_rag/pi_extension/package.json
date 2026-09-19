@@ -1,0 +1,26 @@
+{
+  "name": "chroma-rag-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Pi TypeScript extension: dual-store ChromaDB RAG query with RRF merge and offline fallback.",
+  "type": "module",
+  "pi": {
+    "extensions": ["chroma-rag.ts"]
+  },
+  "scripts": {
+    "build": "tsc --noEmit --strict",
+    "typecheck": "tsc --noEmit --strict",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@sinclair/typebox": "^0.34.0",
+    "chromadb": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

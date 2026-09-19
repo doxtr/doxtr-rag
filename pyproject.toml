@@ -1,0 +1,127 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "doxtr-rag"
+dynamic = ["version"]
+authors = [{ name = "Jens Frey" }]
+description = "Multi-tenant, fail-closed Sphinx RAG extension for the doxtr ecosystem (dual-store ChromaDB knowledge base with security-classified xlinks)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "sphinx>=5.0",
+    "pydantic>=2,<3",
+    "chromadb>=1.0,<2",
+    "onnxruntime>=1.17",
+    "tokenizers>=0.15",
+    "numpy>=1.24",
+    "huggingface-hub>=0.20",
+    "pypdf>=4.0",
+    "openpyxl>=3.1",
+    "python-docx>=1.1",
+    "python-pptx>=0.6.23",
+    "odfpy>=1.4.1",
+    "httpx>=0.27",
+    "sphinxcontrib-xlink>=1.3",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: Sphinx :: Extension",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Documentation :: Sphinx",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+keywords = [
+    "sphinx", "rag", "retrieval-augmented-generation", "semantic-search",
+    "vector-search", "chromadb", "embeddings", "bge-m3", "knowledge-base",
+    "documentation", "ai-agent", "pi-agent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/doxtr/doxtr-rag"
+"Repository" = "https://github.com/doxtr/doxtr-rag"
+"Changelog" = "https://github.com/doxtr/doxtr-rag/blob/main/CHANGELOG.md"
+"Issues" = "https://github.com/doxtr/doxtr-rag/issues"
+
+[project.scripts]
+doxtr-rag = "doxtr_rag.cli:main"
+doxtr-rag-embed-server = "doxtr_rag.embed_server:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "mypy>=1.8",
+]
+
+[tool.setuptools.packages.find]
+include = ["doxtr_rag*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "doxtr_rag.__version__" }
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+doxtr_rag = [
+    "py.typed",
+    # Ship the TypeScript query extension as package data so `install-agent`
+    # works from a plain wheel install (no source checkout needed).
+    "pi_extension/*.ts",
+    "pi_extension/*.json",
+    "pi_extension/tests/*.ts",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test_harness", "tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.coverage.run]
+source = ["doxtr_rag"]
+omit = ["*/test_*", "*/conf.py"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
+
+[tool.mypy]
+# Runtime is 3.14 and several third-party stubs (numpy, sphinx) use 3.12+
+# `type` statement syntax; parse under 3.12 so their stubs load. Our own code
+# uses `from __future__ import annotations` and stays 3.10-compatible
+# (requires-python >=3.10).
+python_version = "3.12"
+strict = true
+packages = ["doxtr_rag"]
+ignore_missing_imports = true
+
+# Third-party libraries ship syntax newer than our floor (3.10) or lack stubs.
+# Skip following their imports so strict checking targets only our code.
+[[tool.mypy.overrides]]
+module = [
+    "sphinx.*",
+    "docutils.*",
+    "numpy.*",
+    "chromadb.*",
+    "huggingface_hub.*",
+    "tokenizers.*",
+    "onnxruntime.*",
+    "pypdf.*",
+    "openpyxl.*",
+    "docx.*",
+    "pptx.*",
+    "odf.*",
+]
+follow_imports = "skip"
+ignore_missing_imports = true

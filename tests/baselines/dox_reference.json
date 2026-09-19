@@ -1,0 +1,10 @@
+{
+  "_comment": "Baseline for the dox reference full-build regression test. Regenerate with: python -m tests.helpers.regen_dox_baseline (or update by hand) when the dox project legitimately changes. A DROP below these floors means a new doc construct/extension broke doxtr-rag harvesting/ingestion; investigate before updating.",
+  "dox_repo": "https://github.com/doxtr/dox",
+  "sphinx_build_exit": 0,
+  "min_docs_ingested": 35,
+  "min_total_chunks": 120,
+  "expected_scope": "SHARED_ORG",
+  "embedding_dimension": 1024,
+  "embedding_model": "BAAI/bge-m3"
+}

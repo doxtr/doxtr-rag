@@ -1,0 +1,91 @@
+name: Test Harness
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-harness:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Pull container image
+        run: docker pull doxtr/reactor:0.1.5
+
+      - name: Run test harness (RAG Sphinx build)
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspaces/docs \
+            -w /workspaces/docs \
+            doxtr/reactor:0.1.5 \
+            bash -c '
+              pip install -e /workspaces/docs[dev] 2>/dev/null || pip install -e /workspaces/docs &&
+              cd test_harness &&
+              python test_runner.py --clean
+            '
+
+      - name: Run unit tests
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspaces/docs \
+            -w /workspaces/docs \
+            doxtr/reactor:0.1.5 \
+            bash -c '
+              pip install -e /workspaces/docs[dev] 2>/dev/null || pip install -e /workspaces/docs &&
+              python -m pytest tests/ -v --tb=short
+            '
+
+      - name: dox reference full-build regression
+        # Real sphinx-build of the entire github.com/doxtr/dox project with
+        # doxtr_rag enabled, asserting the store is populated through the real
+        # event lifecycle (catches doc constructs / extensions that break the
+        # extension). Runs in the reactor container, which has the full dox
+        # extension stack + the pre-baked bge-m3 weights.
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspaces/docs \
+            -w /workspaces/docs \
+            doxtr/reactor:0.1.5 \
+            bash -c '
+              pip install -e /workspaces/docs[dev] 2>/dev/null || pip install -e /workspaces/docs &&
+              python -m pytest tests/test_dox_reference_build.py -v --tb=short
+            '
+
+      - name: dox PDF ingest regression
+        # Build a real PDF from the dox project (Sphinx LaTeX -> lualatex, via
+        # the doxtr PDF theme) and ingest it through the P3 PDF extractor + P5
+        # storage with real bge-m3 embeddings. Real-world PDF fixture, not a
+        # hand-crafted one. Reactor container has lualatex/latexmk + weights.
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspaces/docs \
+            -w /workspaces/docs \
+            doxtr/reactor:0.1.5 \
+            bash -c '
+              pip install -e /workspaces/docs[dev] 2>/dev/null || pip install -e /workspaces/docs &&
+              python -m pytest tests/test_dox_pdf_ingest.py -v --tb=short
+            '
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-harness-html
+          path: test_harness/_build/html/

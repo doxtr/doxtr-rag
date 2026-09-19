@@ -1,0 +1,77 @@
+.DS_Store
+.pi/npm
+.pi-subagents
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Sphinx build artifacts
+*.doctrees
+_build/
+
+# Test harness build artifacts
+test_harness/_build/
+
+# doxtr-rag runtime data (chroma store, cache db, audit log) — never commit,
+# never ingest. See CONVENTIONS §.doxtr/ exclusion.
+.doxtr/
+
+# ONNX / embedding model weights cache
+*.onnx
+models_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Node / TypeScript extension
+.pi/extensions/**/node_modules/
+.pi/extensions/node_modules/
+doxtr_rag/pi_extension/node_modules/
+# The installed Pi extension (deployment target populated by
+# `doxtr-rag --install-agent`); source of truth is doxtr_rag/pi_extension/.
+.pi/extensions/chroma-rag/
+
+# Plans / internal notes
+plans
+
+# Local reference copy of upstream source (not tracked)
+master-repo
