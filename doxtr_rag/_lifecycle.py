@@ -5,12 +5,27 @@ doxtr-rag pipeline. It is intentionally defensive: any component that is not
 yet available (during incremental development) or that fails at runtime
 (CONVENTIONS §Graceful Degradation) must never crash ``sphinx-build``.
 
-The pipeline stores per-build state on the ``app`` object (NOT ``app.env``,
-which Sphinx pickles to ``environment.pickle`` and merges across parallel-read
-workers) under the ``_doxtr_rag_state`` attribute so it survives across the
-three events without being serialized. A live pipeline holds non-picklable
-resources (SQLite connection, httpx client); keeping it off ``app.env`` avoids
-a pickling crash during the read phase.
+The live pipeline object stores per-build state on the ``app`` object (NOT
+``app.env``, which Sphinx pickles to ``environment.pickle`` and ships between
+parallel workers) under the ``_doxtr_rag_state`` attribute so it survives across
+the events without being serialized. A live pipeline holds non-picklable
+resources (SQLite connection, httpx client); keeping it off ``app.env`` avoids a
+pickling crash.
+
+Parallel-write safety (CONVENTIONS §Concurrency)
+------------------------------------------------
+The extension is ``parallel_write_safe = True``. In the supported Sphinx (9.x)
+every event this module hooks runs in the MAIN process: ``builder-inited`` and
+``build-finished`` are main-process events, and ``doctree-resolved`` is emitted
+from the write phase's RESOLVING step
+(``BuildEnvironment.get_and_resolve_doctree`` in ``sphinx/builders/__init__.py``),
+which runs in the main process *before* any write worker is forked. The
+extension never hooks ``write_doc`` (the only forked callback). The pipeline
+buffer therefore accumulates every document in one process and
+``build-finished`` — also main-process — is the SOLE writer to the SQLite cache
+and Chroma store. A single writer is inherently safe under ``sphinx-build -j``;
+no explicit locking is needed. (Verified against Sphinx 9.1; re-verify the
+RESOLVING-phase emission point on a major Sphinx upgrade.)
 """
 
 from __future__ import annotations
@@ -70,7 +85,12 @@ def on_builder_inited(app: "Sphinx") -> None:
 
 
 def on_doctree_resolved(app: "Sphinx", doctree: Any, docname: str) -> None:
-    """Harvest, classify, cache-check and buffer chunks for one document."""
+    """Harvest, classify, cache-check and buffer chunks for one document.
+
+    Runs in the main process (the write phase's RESOLVING step), buffering into
+    the live pipeline so ``build-finished`` can flush every document from one
+    process.
+    """
     state = _get_state(app)
     pipeline = state.get("pipeline")
     if pipeline is None:
@@ -82,7 +102,11 @@ def on_doctree_resolved(app: "Sphinx", doctree: Any, docname: str) -> None:
 
 
 def on_build_finished(app: "Sphinx", exception: Exception | None) -> None:
-    """Upsert, prune, flush the audit log and close resources."""
+    """Upsert, prune, flush the audit log and close resources (single writer).
+
+    This runs only in the main process, making it the sole writer to the SQLite
+    cache and Chroma store — the basis of parallel-write safety.
+    """
     state = _get_state(app)
     pipeline = state.get("pipeline")
     if pipeline is None:

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import textwrap
+from pathlib import Path
 from typing import Any
+
+import pytest
 
 import doxtr_rag
 
@@ -51,7 +55,7 @@ def test_setup_registers_all_config_keys() -> None:
     assert expected <= set(app.config_values)
     assert meta["version"] == doxtr_rag.__version__
     assert meta["parallel_read_safe"] is True
-    assert meta["parallel_write_safe"] is False
+    assert meta["parallel_write_safe"] is True
 
 
 def test_setup_connects_lifecycle_events() -> None:
@@ -97,3 +101,55 @@ def test_store_mode_defaults_are_valid() -> None:
     assert app.config_values["rag_store_tenant"][0] == "default_tenant"
     assert app.config_values["rag_shared_store_database"][0] == "doxtr_shared"
     assert app.config_values["rag_local_store_database"][0] == "doxtr_private"
+
+
+def test_extension_is_parallel_write_safe_in_real_sphinx(tmp_path: Path) -> None:
+    """Regression guard: a real Sphinx app must allow parallel WRITE with the
+    extension loaded (no ``not safe for parallel writing`` / serial fallback).
+
+    This is the actual condition that governs the warning the user reported:
+    Sphinx calls ``is_parallel_allowed('write')``, which reads
+    ``parallel_write_safe`` off the registered extension. If this regresses to
+    ``False``, parallel builds silently fall back to slow serial writes.
+    """
+    sphinx_app = pytest.importorskip("sphinx.application")
+
+    src = tmp_path / "source"
+    src.mkdir()
+    (src / "conf.py").write_text(
+        textwrap.dedent(
+            f"""
+            extensions = ["doxtr_rag"]
+            master_doc = "index"
+            rag_local_store_mode = "embedded"
+            rag_local_store_path = {str(tmp_path / '.doxtr' / 'chroma')!r}
+            rag_shared_store_mode = "embedded"
+            rag_shared_store_uri = {str(tmp_path / '.doxtr' / 'shared')!r}
+            rag_cache_db = {str(tmp_path / '.doxtr' / 'cache.db')!r}
+            rag_audit_log_path = {str(tmp_path / '.doxtr' / 'audit.jsonl')!r}
+            """
+        ),
+        encoding="utf-8",
+    )
+    (src / "index.rst").write_text("Index\n=====\n\nBody.\n", encoding="utf-8")
+
+    try:
+        app = sphinx_app.Sphinx(
+            srcdir=str(src),
+            confdir=str(src),
+            outdir=str(tmp_path / "_build"),
+            doctreedir=str(tmp_path / "_doctree"),
+            buildername="html",
+            parallel=2,
+            status=None,
+            warning=None,
+        )
+    except Exception as exc:  # noqa: BLE001 - constrained env (no chroma etc.)
+        pytest.skip(f"real Sphinx app unavailable in this environment: {exc}")
+
+    ext = app.extensions["doxtr_rag"]
+    assert getattr(ext, "parallel_write_safe") is True
+    assert getattr(ext, "parallel_read_safe") is True
+    # The decisive check: Sphinx will NOT downgrade to serial write.
+    assert app.is_parallel_allowed("write") is True
+    assert app.is_parallel_allowed("read") is True

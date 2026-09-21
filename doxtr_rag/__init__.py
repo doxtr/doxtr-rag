@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sphinx.application import Sphinx
@@ -79,10 +79,19 @@ def setup(app: "Sphinx") -> dict[str, Any]:
         app: The Sphinx application instance.
 
     Returns:
-        The extension metadata dict. ``parallel_read_safe`` is ``True`` but
-        ``parallel_write_safe`` is ``False`` because the SQLite cache and the
-        local Chroma store are not safe for concurrent writes (see
-        CONVENTIONS §Concurrency).
+        The extension metadata dict. Both ``parallel_read_safe`` and
+        ``parallel_write_safe`` are ``True``. The extension is write-safe under
+        ``sphinx-build -j`` because every event it hooks runs in the MAIN
+        process: ``builder-inited`` and ``build-finished`` are main-process
+        events, and ``doctree-resolved`` is emitted from the write phase's
+        RESOLVING step (``BuildEnvironment.get_and_resolve_doctree`` in
+        ``sphinx/builders/__init__.py``), which runs in the main process
+        *before* any write worker is forked. The extension never hooks
+        ``write_doc`` (the only forked callback). ``build-finished`` — also
+        main-process — is therefore the SOLE writer to the SQLite cache and
+        Chroma store (single writer), so no concurrent writes occur. Verified
+        against Sphinx 9.1; re-verify the RESOLVING-phase emission point on a
+        major Sphinx upgrade (see CONVENTIONS §Concurrency).
     """
     for name, default, rebuild in _CONFIG_VALUES:
         app.add_config_value(name, default, rebuild)
@@ -94,5 +103,5 @@ def setup(app: "Sphinx") -> dict[str, Any]:
     return {
         "version": __version__,
         "parallel_read_safe": True,
-        "parallel_write_safe": False,
+        "parallel_write_safe": True,
     }

@@ -553,3 +553,39 @@ def test_pipeline_shrinking_resource_prunes_orphans(tmp_path):  # type: ignore[n
     p2.doctree_resolved(publish_doctree("T\n=\n\nBody only now.\n"), "d")
     p2.build_finished(None)
     assert e2.private_store.count() < two  # type: ignore[union-attr]
+
+
+# -- parallel-write single-writer path ---------------------------------------
+def test_parallel_write_resolving_loop_ingests_all_docs(tmp_path: Path) -> None:
+    """Prove the single-writer path ingests the FULL doc set under the -j model.
+
+    Under ``sphinx-build -j N`` only ``write_doc`` runs in forked workers;
+    ``doctree-resolved`` is emitted by the write phase's RESOLVING step in the
+    MAIN process (``get_and_resolve_doctree``), so a single Pipeline instance
+    buffers every document and ``build-finished`` — also main-process — is the
+    sole writer. This test mimics that main-process RESOLVING loop: one
+    pipeline, ``builder_inited`` → ``doctree_resolved`` for several docnames →
+    a single ``build_finished`` flush, asserting all docs were ingested by the
+    one writer.
+    """
+    from doxtr_rag.pipeline import Pipeline
+
+    config = _config(tmp_path)
+    engine = IngestionEngine(config, provider=FakeProvider())
+    pipe = Pipeline(config, srcdir=str(tmp_path), engine=engine, start_servers=False)
+
+    pipe.builder_inited()
+    for name, body in (
+        ("a", "A\n=\n\nBody a.\n"),
+        ("b", "B\n=\n\nBody b.\n"),
+        ("c", "C\n=\n\nBody c.\n"),
+    ):
+        pipe.doctree_resolved(publish_doctree(body), name)
+    assert {"node:a", "node:b", "node:c"} <= set(pipe._resources)  # noqa: SLF001
+
+    pipe.build_finished(None)
+
+    assert engine.private_store is not None
+    # Every document's chunks were ingested by the single main-process writer.
+    assert engine.private_store.count() >= 3
+

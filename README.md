@@ -26,7 +26,20 @@ During `sphinx-build` the extension:
 2. **Extracts** mounted multi-format files — PDF (page-level), spreadsheets
    (`.xlsx`/`.ods` → Markdown tables), presentations (`.pptx` slide title + body
    + speaker notes; `.keynote`/`.key` best-effort), and Word/OpenOffice
-   (`.docx`/`.odt` heading-aware).
+   (`.docx`/`.odt` heading-aware). For `.docx`, extraction first uses the
+   standard python-docx paragraph API; if that surfaces no body content —
+   e.g. the text lives in non-standard runs, content-controls, table cells,
+   or custom paragraph styles (like `InfoLine`) that python-docx does not
+   expose as paragraphs — it **falls back** to reading the raw `<w:t>` text
+   nodes directly from `word/document.xml`, preserving heading/section
+   structure so no content is silently dropped.
+
+   *Overriding extraction:* the per-extension dispatch is a simple
+   last-writer-wins registry. To override or add an extractor, call
+   `doxtr_rag.extractors.register(ext)(fn)` (where `fn(path, scope)` yields
+   `DocumentChunk`s) from a module imported **after** `doxtr_rag.extractors`;
+   the last registration for a given extension wins, so a child theme can
+   fully replace the built-in `.docx`/`.pdf`/etc. handling with its own.
 3. **Classifies** Jira/Confluence `xlink` targets by API-level access
    restriction (allow-list: only affirmatively-unrestricted → `SHARED_ORG`).
 4. **Reconciles** every chunk's final scope through a single
@@ -46,6 +59,12 @@ is unreachable.
 All embeddings use a pinned `bge-m3` model standardized on **1024-dim** dense
 vectors; parity (same model + dimension) is enforced across ingestion (Python)
 and query (TypeScript).
+
+The extension is **safe under parallel builds** (`sphinx-build -j N`): it
+declares `parallel_read_safe = True` and `parallel_write_safe = True`. Every
+event it hooks runs in the main process — `doctree-resolved` buffers chunks and
+`build-finished` is the sole writer to the SQLite cache and Chroma store — so
+parallel builds are not downgraded to slow serial writes.
 
 ## 2. Installation
 
@@ -336,6 +355,14 @@ point the extension at it (overrides the auto-started one):
 doxtr-rag-embed-server --host 127.0.0.1 --port 8519 &
 export DOXTR_RAG_EMBED_URL="http://127.0.0.1:8519/embed"
 ```
+
+**No `@chroma-core/default-embed` dependency.** Because every query embedding is
+pre-computed by the `bge-m3` embed server and passed to ChromaDB as
+`queryEmbeddings`, the extension never uses a collection's built-in embedder.
+When opening a collection it passes a **no-op `embeddingFunction`** to
+`getCollection`, which stops `chromadb` 3.x from instantiating its
+`DefaultEmbeddingFunction` — so the optional `@chroma-core/default-embed`
+package is **not required** and does not need to be installed.
 
 ### One-command installer (reactor-tailored)
 

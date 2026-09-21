@@ -5,8 +5,9 @@ three hash domains — document nodes, external file contents, and resolved
 xlink payloads — all SHA-256. It also maps each resource to the Chroma chunk
 ids it produced so deleted resources can be pruned.
 
-The cache is not parallel-write-safe (CONVENTIONS §Concurrency); the extension
-declares ``parallel_write_safe = False``.
+The cache is written by a single process (``build-finished`` runs only in the
+main process), so it is safe under ``sphinx-build -j``; the extension declares
+``parallel_write_safe = True`` (CONVENTIONS §Concurrency).
 """
 
 from __future__ import annotations

@@ -6,7 +6,34 @@ project aims to follow semantic versioning once it reaches `1.0.0`.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-21
+
+### Added
+- **`.docx` raw-XML `<w:t>` fallback.** `extract_docx` now falls back to reading
+  the raw `<w:t>` text nodes from `word/document.xml` when the standard
+  python-docx paragraph API surfaces no body content — e.g. when the document
+  stores text in non-standard runs, content-controls, table cells, or custom
+  paragraph styles (like `InfoLine`) that python-docx does not expose as
+  paragraphs. The fallback reuses the same heading-chunk pipeline (promoting
+  known section labels to headings) so section structure is preserved and no
+  content is silently dropped.
+
 ### Changed
+- **Parallel-write safe under `sphinx-build -j`.** The extension now declares
+  `parallel_write_safe = True`. Every event it hooks runs in the main process
+  (`builder-inited`/`build-finished` are main-process events and
+  `doctree-resolved` is emitted from the write phase's RESOLVING step before any
+  write worker forks; `write_doc` is never hooked), so `build-finished` is the
+  sole writer to the SQLite cache and Chroma store. Parallel builds no longer
+  downgrade to serial writes (removing the `not safe for parallel writing` /
+  `doing serial write` warnings and the associated slowdown).
+- **No-op `embeddingFunction` on collection queries (no `@chroma-core/default-embed`).**
+  The TypeScript query extension now passes a no-op `embeddingFunction` to
+  `getCollection`, preventing `chromadb` 3.x from instantiating its
+  `DefaultEmbeddingFunction`. Query embeddings are always pre-computed by the
+  `bge-m3` HTTP server and passed as `queryEmbeddings`, so the collection's
+  built-in embedder is never used and the optional `@chroma-core/default-embed`
+  package is no longer required.
 - **TypeScript extension is now shipped inside the package** at
   `doxtr_rag/pi_extension/` (single source of truth, included in the wheel/sdist as package
   data) instead of living under `.pi/extensions/chroma-rag/`. `.pi/extensions/chroma-rag/` is

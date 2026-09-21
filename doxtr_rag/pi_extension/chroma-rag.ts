@@ -31,6 +31,17 @@ const CONNECT_TIMEOUT_MS = 5000;
 const READ_TIMEOUT_MS = 10000;
 const DEFAULT_TOP_K = 5;
 
+/**
+ * No-op embeddingFunction passed to every `getCollection()` call to suppress
+ * chromadb 3.x from instantiating DefaultEmbeddingFunction (which requires the
+ * optional `@chroma-core/default-embed` package). We never use a collection's
+ * built-in embedder — queryEmbeddings are always pre-computed by the bge-m3
+ * HTTP server and passed directly to `collection.query()`. Kept as a single
+ * module-level constant so every call site suppresses the default embedder
+ * identically (no divergence).
+ */
+const NOOP_EMBEDDING_FUNCTION = { generate: async (_texts: string[]) => [] as number[][] };
+
 /** Locate and parse `.doxtr/endpoints.json`.
  *
  * Discovery order (first hit wins):
@@ -142,7 +153,11 @@ async function queryScope(
   embedding: number[],
   topK: number,
 ): Promise<RankedChunk[]> {
-  const collection = await client.getCollection({ name: collectionName });
+  // See NOOP_EMBEDDING_FUNCTION: suppress chromadb 3.x DefaultEmbeddingFunction.
+  const collection = await client.getCollection({
+    name: collectionName,
+    embeddingFunction: NOOP_EMBEDDING_FUNCTION,
+  });
   const res = await collection.query({
     queryEmbeddings: [embedding],
     nResults: topK,

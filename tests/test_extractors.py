@@ -100,6 +100,116 @@ def test_odt_heading_aware() -> None:
     assert "Sub body." in joined
 
 
+def test_docx_xml_fallback_recovers_non_paragraph_body(tmp_path: Path) -> None:
+    """Body text python-docx does not surface as paragraphs is still recovered.
+
+    Builds a .docx whose only ``doc.paragraphs`` entry is a section label
+    (custom/Normal style, so no real Heading styles exist) while the actual
+    body text lives inside a table cell -- which ``doc.paragraphs`` does NOT
+    surface. This forces ``extract_docx`` down the raw-XML ``<w:t>`` fallback
+    (``_extract_docx_xml``). The test asserts the body text is recovered from
+    the raw XML and that the section label is preserved as heading structure.
+
+    Regression guard: if the XML fallback is removed and only the primary
+    ``doc.paragraphs`` pass runs, the table-cell body text is lost entirely
+    and this test fails.
+    """
+    from docx import Document
+
+    doc = Document()
+    # Section label paragraph (Normal style -> not a recognized Heading).
+    doc.add_paragraph("Section One")
+    # Body text inside a table cell: NOT returned by doc.paragraphs, but it is
+    # present as a <w:t> node in word/document.xml.
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "This body text lives in a table cell."
+    docx_path = tmp_path / "table_body.docx"
+    doc.save(str(docx_path))
+
+    chunks = list(extract_file(str(docx_path), SHARED))
+
+    # Body text recovered via the raw-XML fallback.
+    joined = " ".join(c.text for c in chunks)
+    assert "This body text lives in a table cell." in joined
+    # Section structure preserved: the label becomes a heading with breadcrumb.
+    titles = [c.metadata["section_title"] for c in chunks]
+    assert "Section One" in titles
+    sec = next(c for c in chunks if c.metadata["section_title"] == "Section One")
+    assert "table_body.docx" in sec.metadata["breadcrumb"]
+    assert "Section One" in sec.metadata["breadcrumb"]
+
+
+def test_docx_xml_fallback_preserves_real_heading_with_table_body(
+    tmp_path: Path,
+) -> None:
+    """A real Heading style is preserved (not re-promoted) on the XML fallback.
+
+    Builds a .docx with a REAL ``Heading 1`` styled paragraph plus body text
+    that lives ONLY inside a table cell (``doc.paragraphs`` surfaces the
+    heading but no body paragraph). ``has_body`` is therefore False and
+    ``extract_docx`` takes the raw-XML fallback with ``any_real_heading=True``.
+    Asserts (a) the heading keeps its API-derived level (it is recognised as a
+    heading and produces breadcrumb structure) and (b) the table-cell body is
+    recovered under that heading.
+
+    Regression guard for the branch where real headings coexist with body that
+    only python-docx's paragraph API misses.
+    """
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("Real Heading", level=1)
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Body only in a table cell."
+    docx_path = tmp_path / "heading_table.docx"
+    doc.save(str(docx_path))
+
+    chunks = list(extract_file(str(docx_path), SHARED))
+
+    joined = " ".join(c.text for c in chunks)
+    assert "Body only in a table cell." in joined
+    titles = [c.metadata["section_title"] for c in chunks]
+    assert "Real Heading" in titles
+    sec = next(c for c in chunks if c.metadata["section_title"] == "Real Heading")
+    # Heading preserved as structure: it appears in the breadcrumb trail and
+    # the table-cell body is grouped under it.
+    assert "Real Heading" in sec.metadata["breadcrumb"]
+    assert "Body only in a table cell." in sec.text
+
+
+def test_docx_xml_fallback_recognizes_split_run_heading(tmp_path: Path) -> None:
+    """A heading label split across multiple runs is still recognised.
+
+    python-docx (and Word) split a paragraph across several ``<w:r>``/``<w:t>``
+    runs at formatting boundaries. If the fallback matched bare ``<w:t>`` nodes
+    it would never match a heading label stored as several runs, silently
+    degrading the heading to body text. This builds a Heading 1 paragraph whose
+    text is written as two separately-formatted runs ("Split " + "Heading",
+    the second bold) plus table-cell body, forcing the XML fallback, and
+    asserts the reconstructed paragraph is recognised as a heading.
+    """
+    from docx import Document
+
+    doc = Document()
+    heading = doc.add_heading(level=1)
+    heading.add_run("Split ")
+    heading.add_run("Heading").bold = True  # forces a separate run/<w:t>
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Body under a split heading."
+    docx_path = tmp_path / "split_heading.docx"
+    doc.save(str(docx_path))
+
+    chunks = list(extract_file(str(docx_path), SHARED))
+
+    titles = [c.metadata["section_title"] for c in chunks]
+    # The two runs reconstruct to "Split Heading" and are recognised as a
+    # heading (NOT split into / degraded to body text).
+    assert "Split Heading" in titles
+    sec = next(c for c in chunks if c.metadata["section_title"] == "Split Heading")
+    assert "Split Heading" in sec.metadata["breadcrumb"]
+    assert "Body under a split heading." in sec.text
+
+
 # -- Private / password routing ----------------------------------------------
 def test_private_scope_preserved() -> None:
     chunks = _chunks("sample.pdf", AccessControl.LOCAL_PRIVATE)

@@ -282,7 +282,16 @@ def extract_keynote(path: str, scope: AccessControl) -> Iterator[DocumentChunk]:
 # ---------------------------------------------------------------------------
 @register(".docx")
 def extract_docx(path: str, scope: AccessControl) -> Iterator[DocumentChunk]:
-    """Heading-aware structural extraction with breadcrumbs."""
+    """Heading-aware structural extraction with breadcrumbs.
+
+    Primary strategy: iterate ``doc.paragraphs`` (standard python-docx API).
+    Fallback: if the paragraph pass yields no body content (e.g. the document
+    stores text in non-standard runs, content-controls, or table cells that
+    python-docx does not surface as paragraphs), reconstruct paragraph text
+    directly from the raw ``word/document.xml`` XML (grouping ``<w:t>`` run
+    nodes under their ``<w:p>`` parent) and feed the paragraphs through the
+    same heading-chunk pipeline so section structure is preserved.
+    """
     from docx import Document
 
     try:
@@ -290,17 +299,121 @@ def extract_docx(path: str, scope: AccessControl) -> Iterator[DocumentChunk]:
     except Exception as exc:  # noqa: BLE001
         raise ExtractionError(f"unreadable docx {path}: {exc}") from exc
 
-    yield from _heading_chunks(
-        path,
-        scope,
+    # --- primary pass: standard paragraph API ---
+    items = list(
         (
-            (
-                _heading_level(p.style.name if p.style else ""),
-                p.text,
-            )
-            for p in doc.paragraphs
-        ),
+            _heading_level(p.style.name if p.style else ""),
+            p.text,
+        )
+        for p in doc.paragraphs
     )
+    # If any real Heading style exists we can distinguish headings from body,
+    # so the primary pass is trustworthy as long as it surfaced body text.
+    # If NO real Heading styles exist we cannot tell a section label from body
+    # text via the API alone, so fall through to the raw-XML pass (which also
+    # recovers text python-docx does not surface as paragraphs, e.g. table
+    # cells).
+    any_real_heading = any(level > 0 for level, _ in items)
+    has_body = any_real_heading and any(
+        level == 0 and text.strip() for level, text in items
+    )
+
+    if has_body:
+        yield from _heading_chunks(path, scope, iter(items))
+        return
+
+    # --- fallback: raw XML paragraph reconstruction ---
+    logger.debug(
+        "doxtr-rag: docx %s has no body paragraphs via python-docx API; "
+        "falling back to raw XML <w:t> extraction",
+        path,
+    )
+    yield from _extract_docx_xml(path, scope, items, any_real_heading)
+
+
+def _extract_docx_xml(
+    path: str,
+    scope: AccessControl,
+    api_items: list[tuple[int, str]],
+    any_real_heading: bool,
+) -> Iterator[DocumentChunk]:
+    """Extract text from docx by reconstructing paragraphs from document.xml.
+
+    The paragraph style information from the python-docx API pass is used to
+    detect heading levels; body text is sourced from the raw XML run text so
+    content stored in non-standard paragraph styles (e.g. 'InfoLine') or in
+    table cells is also captured. Raw ``<w:t>`` run nodes are grouped under
+    their ``<w:p>`` parent to reconstruct whole-paragraph text before matching
+    against the heading map -- this is essential because python-docx splits a
+    paragraph across multiple runs at formatting boundaries, so a heading label
+    is often stored as several adjacent ``<w:t>`` nodes rather than one.
+
+    ``any_real_heading`` is passed in from :func:`extract_docx` (rather than
+    recomputed here) so the two passes cannot desync on how they classify the
+    document.
+    """
+    import zipfile
+    from collections import Counter
+    from lxml import etree
+
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    # Build a heading map from the API pass.  When the document uses custom
+    # styles (e.g. 'InfoLine') that _heading_level does not recognise as
+    # headings, the paragraph-API items will all have level 0.  In that case
+    # treat every non-empty API item as a level-1 heading so the section
+    # labels still produce structural chunks rather than collapsing into one
+    # flat body block.  Matching is by exact reconstructed-paragraph text.
+    heading_map: dict[str, int] = {}
+    # Track how many times each heading label is expected to appear so a label
+    # is consumed at most as many times as the API pass saw it -- this stops a
+    # body paragraph that happens to equal a label from being promoted, and
+    # stops a single label from re-firing for every identical body string.
+    remaining: Counter[str] = Counter()
+    for level, text in api_items:
+        t = text.strip()
+        if not t:
+            continue
+        if any_real_heading:
+            if level > 0:
+                heading_map[t] = level
+                remaining[t] += 1
+        else:
+            # All items are body-level in the API pass -> promote each to h1.
+            heading_map[t] = 1
+            remaining[t] += 1
+
+    try:
+        with zipfile.ZipFile(path) as z:
+            with z.open("word/document.xml") as f:
+                tree = etree.parse(f)
+    except Exception as exc:  # noqa: BLE001
+        raise ExtractionError(f"unreadable docx XML {path}: {exc}") from exc
+
+    ns = {"w": W}
+
+    def _paragraph_text(para: etree._Element) -> str:
+        """Join all run text under a <w:p> into a single paragraph string."""
+        parts = [t.text for t in para.findall(".//w:t", ns) if t.text]
+        return "".join(parts).strip()
+
+    # Reconstruct (level, text) items in document order, one per <w:p>.  A
+    # paragraph is treated as a heading only when its full text matches a
+    # heading label AND that label still has an unconsumed occurrence.
+    def _iter() -> Iterator[tuple[int, str]]:
+        budget = Counter(remaining)
+        for para in tree.iter(f"{{{W}}}p"):
+            text = _paragraph_text(para)
+            if not text:
+                continue
+            level = heading_map.get(text, 0)
+            if level > 0 and budget[text] > 0:
+                budget[text] -= 1
+                yield (level, text)
+            else:
+                yield (0, text)
+
+    yield from _heading_chunks(path, scope, _iter())
 
 
 def _heading_level(style_name: str) -> int:
