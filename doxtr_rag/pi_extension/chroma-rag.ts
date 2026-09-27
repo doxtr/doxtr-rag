@@ -21,6 +21,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   EMBEDDING_DIMENSION,
   type EndpointsDescriptor,
+  type MountEndpoint,
   type ScopeEndpoint,
   fromStoreMetadata,
 } from "./addressing.js";
@@ -97,6 +98,17 @@ function clientFor(scopeKey: "shared" | "private", ep: ScopeEndpoint): ChromaCli
     tenant: ep.tenant,
     database: ep.database,
     headers: headersFromEnv(SCOPE_HEADER_ENV[scopeKey]),
+  });
+}
+
+/** Build a ChromaClient for one mount sidecar endpoint (no per-scope headers). */
+function clientForMount(ep: MountEndpoint): ChromaClient {
+  return new ChromaClient({
+    host: ep.host,
+    port: ep.port,
+    ssl: ep.ssl,
+    tenant: ep.tenant,
+    database: ep.database,
   });
 }
 
@@ -207,18 +219,42 @@ export async function searchKnowledgeBase(
   const sharedClient = clientFor("shared", endpoints.shared);
   const privateClient = clientFor("private", endpoints.private);
 
-  const settled = await Promise.allSettled([
-    withTimeout(
-      queryScope(sharedClient, endpoints.shared.collection, embedding, topK),
-      CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS,
-      "shared store query",
-    ),
-    withTimeout(
-      queryScope(privateClient, endpoints.private.collection, embedding, topK),
-      CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS,
-      "private store query",
-    ),
-  ]);
+  // Each configured mount sidecar (e.g. a vault/) is queried alongside the two
+  // canonical stores and folded into the same RRF merge. A newly-configured
+  // vault becomes searchable automatically once its sidecar is built + served
+  // (published under endpoints.mounts) — no code change needed here.
+  const mounts = endpoints.mounts ?? [];
+
+  const queries: Array<{ label: string; promise: Promise<RankedChunk[]> }> = [
+    {
+      label: "shared",
+      promise: withTimeout(
+        queryScope(sharedClient, endpoints.shared.collection, embedding, topK),
+        CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS,
+        "shared store query",
+      ),
+    },
+    {
+      label: "private",
+      promise: withTimeout(
+        queryScope(privateClient, endpoints.private.collection, embedding, topK),
+        CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS,
+        "private store query",
+      ),
+    },
+  ];
+  for (const mount of mounts) {
+    queries.push({
+      label: `mount:${mount.path}`,
+      promise: withTimeout(
+        queryScope(clientForMount(mount), mount.collection, embedding, topK),
+        CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS,
+        `mount store query (${mount.path})`,
+      ),
+    });
+  }
+
+  const settled = await Promise.allSettled(queries.map((q) => q.promise));
 
   const lists: RankedChunk[][] = [];
   settled.forEach((outcome, idx) => {
@@ -226,7 +262,7 @@ export async function searchKnowledgeBase(
       lists.push(outcome.value);
     } else {
       // Degrade gracefully: log a scrubbed one-liner, never a stack trace.
-      const scopeName = idx === 0 ? "shared" : "private";
+      const scopeName = queries[idx]?.label ?? `query#${idx}`;
       const reason = scrub(String((outcome as PromiseRejectedResult).reason?.message ?? ""));
       console.error(`[chroma-rag] ${scopeName} store unreachable; degrading: ${reason}`);
     }
@@ -250,10 +286,13 @@ const paramsSchema = Type.Object({
  * env var. The parity contract (same pinned bge-m3/1024 as ingestion) is
  * enforced by assertDimension + assertModelParity.
  */
-export function defaultEmbedder(embedUrl?: string | null): QueryEmbedder {
+export function defaultEmbedder(
+  embedUrl?: string | null,
+  model: string = "bge-m3",
+): QueryEmbedder {
   const url = embedUrl || process.env.DOXTR_RAG_EMBED_URL;
   return {
-    model: "bge-m3",
+    model,
     async embed(text: string): Promise<number[]> {
       if (!url) {
         throw new Error(
@@ -268,7 +307,7 @@ export function defaultEmbedder(embedUrl?: string | null): QueryEmbedder {
         const resp = await fetch(url, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ input: text, model: "bge-m3" }),
+          body: JSON.stringify({ input: text, model }),
           signal: controller.signal,
         });
         const data = (await resp.json()) as { embedding?: number[]; data?: { embedding: number[] }[] };
@@ -327,7 +366,7 @@ export default function activate(api: ExtensionAPI): void {
           text = await searchKnowledgeBase(
             params.query,
             topK,
-            defaultEmbedder(endpoints.embedding.embed_url),
+            defaultEmbedder(endpoints.embedding.embed_url, endpoints.embedding.model),
             endpoints,
           );
         }

@@ -6,6 +6,37 @@ project aims to follow semantic versioning once it reaches `1.0.0`.
 
 ## [Unreleased]
 
+## [0.1.2]
+
+### Added
+- **Ad-hoc `doxtr-rag ingest` command.** Ingest a single local file (`--file`)
+  or a fetched URL (`--url`) into a chosen store: the canonical shared/private
+  stores via `--ingest-scope`, or an independent named database via `--store`
+  (created on demand, co-located with the private embedded store, and kept
+  outside the shared/private isolation model). URL ingests fetch and extract
+  with the extension-appropriate extractor (defaulting to HTML) and prepend a
+  small **provenance chunk** carrying the source URL and tags; `--source-url`,
+  `--tags`, and `--doc-title` attach the same provenance to a file ingest.
+- **Portable per-mount sidecar index (`doxtr-rag mount-index` / `mount-watch`).**
+  A per-mount sidecar under `<mount>/.doxtr/` (a SQLite hash cache plus an
+  embedded ChromaDB) lets a checked-out mount be queried immediately without a
+  prior `make html`, and lets unchanged files be skipped on re-scan. `mount-index`
+  builds/refreshes the sidecar once; `mount-watch` runs a single-consumer
+  background loop that incrementally ingests/prunes on create/modify/delete
+  (event-driven via `watchdog` when installed, else polling).
+
+### Packaging
+- **Optional `watch` extra + `all` aggregate.** `watchdog` is now installable
+  via `pip install doxtr-rag[watch]` (event-driven `mount-watch`; absent it
+  falls back to polling). A convenience `all` extra (`pip install
+  doxtr-rag[all]`) aggregates the optional runtime features via a recursive
+  self-reference so it stays in sync as new extras are added. Neither is pulled
+  in by a plain `pip install doxtr-rag`.
+- **Strict mypy under CI without `watchdog`.** `watchdog.*` is skipped in the
+  mypy overrides and the `FileSystemEventHandler` adapter carries a
+  `type: ignore[misc]`, so `mypy --strict` passes whether or not the optional
+  `watchdog` dependency is installed.
+
 ## [0.1.1] - 2026-09-21
 
 ### Added

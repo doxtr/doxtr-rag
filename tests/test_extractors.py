@@ -248,7 +248,9 @@ def test_scan_skips_doxtr_dir(tmp_path: Path) -> None:
 
 
 def test_unknown_extension_ignored(tmp_path: Path) -> None:
-    f = tmp_path / "note.txt"
+    # `.txt` is now a registered extractor; use a genuinely unknown extension
+    # to assert that an unregistered type yields nothing (graceful).
+    f = tmp_path / "note.unknownext"
     f.write_text("hi")
     assert list(extract_file(str(f), SHARED)) == []
 

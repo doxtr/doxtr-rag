@@ -119,6 +119,27 @@ class SphinxRAGConfig(BaseModel):
     rag_store_tenant: str = DEFAULT_TENANT
     rag_local_server_uri: Optional[str] = None
 
+    # Chunk-capping keys. Bound the size of emitted chunks (in characters, a
+    # dependency-free proxy for tokens) so a boundary-sparse document cannot
+    # collapse into one oversized chunk. ``rag_max_chunk_chars <= 0`` disables
+    # capping. The env vars DOXTR_RAG_MAX_CHUNK_CHARS /
+    # DOXTR_RAG_CHUNK_OVERLAP_CHARS override these when set.
+    rag_max_chunk_chars: int = 2000
+    rag_chunk_overlap_chars: int = 300
+
+    # Stable loopback ports for the query servers. Both the Sphinx build
+    # (``builder-inited``) and the standalone ``doxtr-rag-serve`` launcher bind
+    # these SAME ports, and the build reuses an already-running server on a
+    # port rather than spawning a new one on an OS-assigned random port. This
+    # keeps endpoints.json stable across builds/restarts so the query side
+    # (P6) never talks to a dead port. They sit BELOW the Linux ephemeral
+    # range (32768-60999) so transient ``chroma run`` subprocesses cannot
+    # collide. Env vars DOXTR_RAG_SHARED_PORT / DOXTR_RAG_PRIVATE_PORT /
+    # DOXTR_RAG_EMBED_PORT override these when set.
+    rag_shared_port: int = 8787
+    rag_private_port: int = 8788
+    rag_embed_port: int = 8789
+
     # Derived, exposed for parity enforcement.
     embedding_model: str = DEFAULT_EMBEDDING_MODEL
     embedding_dimension: int = EMBEDDING_DIMENSION
@@ -148,6 +169,34 @@ class SphinxRAGConfig(BaseModel):
         tokens. It is the pinned bge-m3 revision, not the raw provider string.
         """
         return DEFAULT_EMBEDDING_REVISION
+
+    # ------------------------------------------------------------------
+    # Stable server ports (env override > conf.py value)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _port_env(var: str, fallback: int) -> int:
+        raw = os.environ.get(var)
+        if raw is None or raw.strip() == "":
+            return fallback
+        try:
+            return int(raw)
+        except ValueError:
+            return fallback
+
+    @property
+    def shared_port(self) -> int:
+        """Effective stable port for the shared loopback Chroma server."""
+        return self._port_env("DOXTR_RAG_SHARED_PORT", self.rag_shared_port)
+
+    @property
+    def private_port(self) -> int:
+        """Effective stable port for the private loopback Chroma server."""
+        return self._port_env("DOXTR_RAG_PRIVATE_PORT", self.rag_private_port)
+
+    @property
+    def embed_port(self) -> int:
+        """Effective stable port for the bge-m3 embed server."""
+        return self._port_env("DOXTR_RAG_EMBED_PORT", self.rag_embed_port)
 
     # ------------------------------------------------------------------
     # Parsing

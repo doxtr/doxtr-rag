@@ -226,6 +226,88 @@ def test_pipeline_scans_mounts(tmp_path: Path) -> None:
     assert any("sample.pdf" in c.metadata["source_file"] for c in all_chunks)
 
 
+def test_pipeline_reuses_mount_sidecar_without_reembedding(tmp_path: Path) -> None:
+    """Sidecar fast-path: a build reuses a pre-built per-mount sidecar so an
+    unchanged mounted file is registered (seen) without being re-parsed/
+    re-embedded, and endpoints.json publishes the served mount."""
+    import shutil
+
+    import doxtr_rag.storage as storage_mod
+    from doxtr_rag import mount_index as mi
+    from doxtr_rag.cache import BuildCache
+    from doxtr_rag.pipeline import Pipeline
+
+    # Ensure the sidecar builder uses the fake provider (no bge-m3 weights).
+    import doxtr_rag.embedding_provider as ep_mod
+
+    class _FakeProv:
+        dimension = 1024
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[0.02] * 1024 for _ in texts]
+
+    orig_ep, orig_storage_ep = ep_mod.EmbeddingProvider, storage_mod.EmbeddingProvider
+    ep_mod.EmbeddingProvider = _FakeProv  # type: ignore[assignment,misc]
+    storage_mod.EmbeddingProvider = _FakeProv  # type: ignore[assignment,misc]
+    try:
+        mount = tmp_path / "mnt"
+        mount.mkdir()
+        fixtures = Path(__file__).parent / "fixtures" / "docs"
+        shutil.copy(fixtures / "sample.pdf", mount / "sample.pdf")
+
+        config = SphinxRAGConfig.from_mapping(
+            {
+                "rag_local_store_mode": "embedded",
+                "rag_local_store_path": str(tmp_path / "priv"),
+                "rag_shared_store_mode": "embedded",
+                "rag_shared_store_uri": str(tmp_path / "shared"),
+                "rag_cache_db": str(tmp_path / "cache.db"),
+                "rag_external_mounts": [{"path": str(mount)}],
+            }
+        )
+
+        # 1) Build the portable sidecar for the mount (writes the SHA cache).
+        counts = mi.index_mount(config, {"path": str(mount)})
+        assert counts["ingested_files"] >= 1
+        assert os.path.isfile(mi.sidecar_cache_path(str(mount)))
+
+        # 2) Seed the build cache with the mount file at its current hash so the
+        #    sidecar fast-path (sidecar clean AND build cache clean) is taken.
+        rid = mi.resource_id_for_file(str(mount / "sample.pdf"))
+        from doxtr_rag.extractors import _sha256_file
+
+        sha = _sha256_file(str(mount / "sample.pdf"))
+        cache = BuildCache(config.rag_cache_db)
+        cache.update_cache(rid, "external_file", sha, ["chunk-id-0"])
+
+        engine = IngestionEngine(config, provider=_FakeProv())
+        pipe = Pipeline(
+            config,
+            srcdir=str(tmp_path),
+            engine=engine,
+            cache=cache,
+            start_servers=False,
+        )
+        pipe.builder_inited()
+
+        # Fast path: the file is registered as seen but NOT re-parsed into a
+        # buffered resource (no chunks re-extracted).
+        assert rid in pipe._seen_resource_ids  # noqa: SLF001
+        assert rid not in pipe._resources  # noqa: SLF001 - not re-parsed
+
+        # 3) endpoints.json publishes the mount when its sidecar is served.
+        mounts = mi.build_mount_endpoints(
+            config, {str(mount): "http://127.0.0.1:8801"}
+        )
+        assert len(mounts) == 1
+        assert mounts[0]["path"] == str(mount)
+        assert mounts[0]["scope"] == "LOCAL_PRIVATE"
+        assert mounts[0]["database"] == mi._sidecar_database_name(str(mount))
+    finally:
+        ep_mod.EmbeddingProvider = orig_ep  # type: ignore[assignment,misc]
+        storage_mod.EmbeddingProvider = orig_storage_ep  # type: ignore[assignment,misc]
+
+
 # -- loopback server ---------------------------------------------------------
 def test_loopback_server_lifecycle(tmp_path: Path) -> None:
     from doxtr_rag.server import LoopbackChromaServer

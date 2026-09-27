@@ -68,9 +68,13 @@ def test_dox_pdf_extraction(dox_pdf: str) -> None:
         f"only {len(nonempty)} pages with text extracted from the dox PDF "
         f"(floor {_MIN_PAGES_WITH_TEXT}); PDF extraction may have regressed."
     )
-    # Every chunk uses the C2 {page} provenance shape, 1-based.
+    # Every chunk carries the C2 {page} provenance shape, 1-based. Oversized
+    # pages may be re-split by the format-agnostic chunk cap in extract_file,
+    # which adds `part`/`part_count` provenance while preserving the `page`
+    # key, so assert `page` is present (superset) rather than the sole key.
     pages = [c.metadata["provenance"] for c in chunks]
-    assert all(set(p) == {"page"} for p in pages)
+    assert all("page" in p for p in pages)
+    assert all(set(p) <= {"page", "part", "part_count"} for p in pages)
     assert all(p["page"] >= 1 for p in pages)
     # Provisional scope preserved (finalized later by P5).
     assert all(c.access_scope is AccessControl.SHARED_ORG for c in chunks)

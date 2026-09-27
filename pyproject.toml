@@ -64,6 +64,17 @@ dev = [
     "pytest-cov>=4.0",
     "mypy>=1.8",
 ]
+watch = [
+    # Optional: event-driven change detection for `doxtr-rag mount-watch`.
+    # Without it, mount-watch transparently falls back to periodic polling.
+    "watchdog>=3.0",
+]
+all = [
+    # Convenience aggregate of all optional runtime features (excludes `dev`
+    # tooling). Self-references the feature extras so it stays in sync as new
+    # ones are added. Install with `pip install doxtr-rag[all]`.
+    "doxtr-rag[watch]",
+]
 
 [tool.setuptools.packages.find]
 include = ["doxtr_rag*"]
@@ -124,6 +135,7 @@ module = [
     "lxml.*",
     "pptx.*",
     "odf.*",
+    "watchdog.*",
 ]
 follow_imports = "skip"
 ignore_missing_imports = true

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sphinx.application import Sphinx
@@ -43,6 +43,24 @@ _CONFIG_VALUES: tuple[tuple[str, Any, str], ...] = (
     ("rag_local_store_database", "doxtr_private", "env"),
     ("rag_store_tenant", "default_tenant", "env"),
     ("rag_local_server_uri", None, "env"),
+    # -- Chunk-capping keys ----------------------------------------------
+    # Bound the size of emitted chunks so a boundary-sparse document cannot
+    # collapse into one oversized chunk (poor retrieval + embedding-window
+    # truncation). Values are in characters (~4 chars/token for prose).
+    # ``rag_max_chunk_chars <= 0`` disables capping. The matching env vars
+    # DOXTR_RAG_MAX_CHUNK_CHARS / DOXTR_RAG_CHUNK_OVERLAP_CHARS override these
+    # when set.
+    ("rag_max_chunk_chars", 2000, "env"),
+    ("rag_chunk_overlap_chars", 300, "env"),
+    # -- Stable loopback server ports ------------------------------------
+    # Both the Sphinx build and the standalone doxtr-rag-serve launcher bind
+    # these SAME ports; the build reuses an already-running server on a port
+    # instead of spawning a new one, so endpoints.json stays stable across
+    # builds/restarts. The DOXTR_RAG_SHARED_PORT / DOXTR_RAG_PRIVATE_PORT /
+    # DOXTR_RAG_EMBED_PORT env vars override these when set.
+    ("rag_shared_port", 8787, "env"),
+    ("rag_private_port", 8788, "env"),
+    ("rag_embed_port", 8789, "env"),
 )
 
 

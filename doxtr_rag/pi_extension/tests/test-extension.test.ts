@@ -10,7 +10,7 @@ import {
   loadEndpoints,
   type QueryEmbedder,
 } from "../chroma-rag.js";
-import type { EndpointsDescriptor } from "../addressing.js";
+import type { EndpointsDescriptor, MountEndpoint } from "../addressing.js";
 import type { RankedChunk } from "../rrf.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -193,6 +193,71 @@ describe("searchKnowledgeBase offline fallback", () => {
     await expect(searchKnowledgeBase("q", 3, drifted, endpoints)).rejects.toThrow(
       /model parity/,
     );
+  });
+});
+
+// ---- mount sidecar query merge (endpoints.mounts) --------------------------
+describe("searchKnowledgeBase mount sidecars", () => {
+  const baseScope = {
+    mode: "http" as const,
+    host: "127.0.0.1",
+    port: 1, // unreachable
+    ssl: false,
+    tenant: "t",
+    collection: "bge_m3_1024",
+    header_keys: [] as string[],
+  };
+  const embedder: QueryEmbedder = {
+    model: "bge-m3",
+    embed: async () => new Array(1024).fill(0.01),
+  };
+
+  function endpointsWithMounts(mounts: MountEndpoint[]): EndpointsDescriptor {
+    return {
+      embedding: { model: "bge-m3", dimension: 1024 },
+      shared: { ...baseScope, database: "doxtr_shared" },
+      private: { ...baseScope, database: "doxtr_private" },
+      mounts,
+    };
+  }
+
+  it("queries a configured mount alongside the stores and degrades per mount", async () => {
+    const errors: string[] = [];
+    const orig = console.error;
+    console.error = (msg?: unknown) => {
+      errors.push(String(msg));
+    };
+    try {
+      const endpoints = endpointsWithMounts([
+        {
+          ...baseScope,
+          database: "doxtr_mount_vault",
+          path: "/data/vault",
+          scope: "LOCAL_PRIVATE",
+        },
+      ]);
+      const text = await searchKnowledgeBase("q", 3, embedder, endpoints);
+      // No throw; unreachable mount degrades gracefully like shared/private.
+      expect(typeof text).toBe("string");
+      expect(text).toMatch(/No results|not available/);
+      // The mount WAS attempted (a per-mount degrade line was logged),
+      // proving the mount loop ran rather than being skipped.
+      expect(errors.some((e) => e.includes("mount:/data/vault"))).toBe(true);
+    } finally {
+      console.error = orig;
+    }
+  });
+
+  it("is backward compatible: no 'mounts' field behaves as before", async () => {
+    const endpoints: EndpointsDescriptor = {
+      embedding: { model: "bge-m3", dimension: 1024 },
+      shared: { ...baseScope, database: "doxtr_shared" },
+      private: { ...baseScope, database: "doxtr_private" },
+      // no mounts field
+    };
+    const text = await searchKnowledgeBase("q", 3, embedder, endpoints);
+    expect(typeof text).toBe("string");
+    expect(text).toMatch(/No results|not available/);
   });
 });
 

@@ -27,6 +27,21 @@ export interface EndpointsDescriptor {
   embedding: { model: string; dimension: number; embed_url?: string | null };
   shared: ScopeEndpoint;
   private: ScopeEndpoint;
+  /**
+   * Portable per-mount sidecar stores (e.g. a `vault/` folder), each served
+   * over its own loopback Chroma server. Present when the Python side has
+   * built + served the mount's `<mount>/.doxtr/chroma`. Optional for backward
+   * compatibility with older endpoints.json files that predate this field.
+   */
+  mounts?: MountEndpoint[];
+}
+
+/** One external mount's resolved connection descriptor. */
+export interface MountEndpoint extends ScopeEndpoint {
+  /** The mount directory path (provenance / logging only). */
+  path: string;
+  /** The mount's declared access scope (fail-closed to LOCAL_PRIVATE). */
+  scope: AccessScope;
 }
 
 /** Inflated (rich) metadata, mirroring DocumentChunk.from_store_metadata. */

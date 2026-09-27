@@ -23,23 +23,47 @@ During `sphinx-build` the extension:
 1. **Harvests** the resolved Sphinx AST (`doctree-resolved`) into structural,
    section-boundary chunks with breadcrumbs and resolved `:ref:`/`:doc:`/`:term:`
    cross-references.
-2. **Extracts** mounted multi-format files — PDF (page-level), spreadsheets
-   (`.xlsx`/`.ods` → Markdown tables), presentations (`.pptx` slide title + body
-   + speaker notes; `.keynote`/`.key` best-effort), and Word/OpenOffice
-   (`.docx`/`.odt` heading-aware). For `.docx`, extraction first uses the
-   standard python-docx paragraph API; if that surfaces no body content —
-   e.g. the text lives in non-standard runs, content-controls, table cells,
-   or custom paragraph styles (like `InfoLine`) that python-docx does not
+2. **Extracts** mounted multi-format files. Binary office/PDF formats — PDF
+   (page-level), spreadsheets (`.xlsx`/`.ods` → Markdown tables), presentations
+   (`.pptx` slide title + body + speaker notes; `.keynote`/`.key` best-effort),
+   and Word/OpenOffice (`.docx`/`.odt` heading-aware). For `.docx`, extraction
+   first uses the standard python-docx paragraph API; if that surfaces no body
+   content — e.g. the text lives in non-standard runs, content-controls, table
+   cells, or custom paragraph styles (like `InfoLine`) that python-docx does not
    expose as paragraphs — it **falls back** to reading the raw `<w:t>` text
    nodes directly from `word/document.xml`, preserving heading/section
    structure so no content is silently dropped.
+
+   *Text & markup formats* (heading/section-aware chunking with breadcrumbs):
+   Markdown (`.md`/`.markdown`, ATX `#` and setext `===`/`---` headings), reST
+   (`.rst`, section-underline levels), Org (`.org`, `*`-prefixed headings), HTML
+   (`.html`/`.htm`/`.xhtml`, `<script>`/`<style>` dropped, `h1`–`h6` as section
+   headings), XML (`.xml`, element text flattened to paragraphs), plain text
+   (`.txt`/`.text`, blank-line-delimited paragraphs) and delimited data
+   (`.csv`/`.tsv` → a single Markdown table; `.tsv` defaults to a tab delimiter,
+   others are sniffed).
+
+   *Diagram sources* (label-only — geometry/styling discarded, one deduplicated
+   order-preserving chunk of clean labels per file): draw.io (`.drawio`,
+   `mxCell@value` / `object`/`UserObject@label` text), PlantUML
+   (`.puml`/`.plantuml`/`.pu`/`.iuml`: participants, arrow/message labels, note
+   bodies, `title`, WBS/mindmap nodes and gantt task names; directives dropped)
+   and D2 (`.d2`: node display labels and connection labels; reserved keywords
+   and structural braces stripped). The full registered set is available at
+   runtime via `doxtr_rag.extractors.supported_extensions()`.
 
    *Overriding extraction:* the per-extension dispatch is a simple
    last-writer-wins registry. To override or add an extractor, call
    `doxtr_rag.extractors.register(ext)(fn)` (where `fn(path, scope)` yields
    `DocumentChunk`s) from a module imported **after** `doxtr_rag.extractors`;
    the last registration for a given extension wins, so a child theme can
-   fully replace the built-in `.docx`/`.pdf`/etc. handling with its own.
+   fully replace the built-in `.docx`/`.pdf`/etc. handling with its own. A
+   child-registered extension is honoured everywhere the pipeline discovers
+   files, because mount scanning and `doxtr-rag ingest --url` selection both
+   read the registry through the public `supported_extensions()` rather than a
+   hard-coded list. Ad-hoc/independent stores are opened through the single
+   public factory `doxtr_rag.storage.open_named_store(...)`, so store
+   construction can be overridden in one place too.
 3. **Classifies** Jira/Confluence `xlink` targets by API-level access
    restriction (allow-list: only affirmatively-unrestricted → `SHARED_ORG`).
 4. **Reconciles** every chunk's final scope through a single
@@ -141,6 +165,32 @@ All keys are registered by `doxtr_rag.setup(app)` and parsed by
 | `rag_local_store_database` | `str` | `doxtr_private` | ChromaDB database name for the private scope. |
 | `rag_store_tenant` | `str` | `default_tenant` | ChromaDB tenant shared by both scopes. |
 | `rag_local_server_uri` | `str \| None` | `None` | URI for the `LOCAL_PRIVATE` store when `rag_local_store_mode = "http"`. |
+
+### Chunk-cap keys
+
+A format-agnostic size cap re-splits oversized chunks on paragraph/sentence/char
+boundaries with overlap, assigning stable `<id>#part=N` ids and per-part hashes.
+
+| key | type | default | env override | effect |
+|-----|------|---------|--------------|--------|
+| `rag_max_chunk_chars` | `int` | `2000` | `DOXTR_RAG_MAX_CHUNK_CHARS` | Max characters per chunk before it is re-split. `<= 0` disables capping. |
+| `rag_chunk_overlap_chars` | `int` | `300` | `DOXTR_RAG_CHUNK_OVERLAP_CHARS` | Character overlap carried between adjacent parts of a re-split chunk. |
+
+### Stable loopback ports
+
+Embedded stores (and the embed server) are served over loopback HTTP for the
+JS query client. These ports are **stable and deterministic** so
+`.doxtr/endpoints.json` never points at a drifting port; a server already
+listening on its port is reused rather than duplicated.
+
+| key | type | default | env override | effect |
+|-----|------|---------|--------------|--------|
+| `rag_shared_port` | `int` | `8787` | `DOXTR_RAG_SHARED_PORT` | Loopback port for the `SHARED_ORG` store server. |
+| `rag_private_port` | `int` | `8788` | `DOXTR_RAG_PRIVATE_PORT` | Loopback port for the `LOCAL_PRIVATE` store server. |
+| `rag_embed_port` | `int` | `8789` | `DOXTR_RAG_EMBED_PORT` | Loopback port for the auto-started `bge-m3` embed server. |
+
+Per-mount sidecar servers (see §8) use their own deterministic ports based at
+`8790`, overridable via `DOXTR_RAG_MOUNT_PORT_BASE`.
 
 ### Derived (exposed for parity enforcement)
 
@@ -321,6 +371,16 @@ Behavior:
   with the same pinned `bge-m3`/1024 model as ingestion (dimension **and** model
   parity asserted before any query), and merges with **RRF** (`1/(k+rank)`,
   rank-based, distances ignored, identical chunks deduped).
+- **Per-mount sidecars.** When `.doxtr/endpoints.json` carries a top-level
+  `"mounts": [...]` array (one entry per served mount sidecar — see §8), the
+  tool queries each mount **concurrently alongside** the shared/private stores
+  and folds the results into the same RRF merge, degrading gracefully per mount
+  (an unreachable mount is logged and skipped, never fatal). Each entry is
+  `{path, scope, mode, host, port, ssl, tenant, database, collection,
+  header_keys}`. The field is **optional and backward compatible**: an
+  `endpoints.json` with no `mounts` behaves exactly as before. A newly-configured
+  vault becomes searchable automatically once its sidecar is built + served —
+  no extension code change.
 - Returns credential-scrubbed Markdown context blocks (the TS `scrub()` mirrors
   the Python pattern set verbatim).
 - **Offline fallback:** if the shared store is unreachable or times out, returns
@@ -433,6 +493,70 @@ doxtr-rag --install-agent pi                        # install the query extensio
 Collections are tagged with the model revision + dimension; a model/dimension
 change drops and rebuilds the affected collection.
 
+### Ad-hoc ingestion (`ingest`)
+
+The Sphinx build is the primary ingestion path; `ingest` adds a one-off path for
+a single file or URL (an `xlink` is a URL, not a file):
+
+```bash
+doxtr-rag --conf conf.py ingest (--url URL | --file PATH) \
+  [--ingest-scope shared|private] [--store NAME] \
+  [--source-url URL] [--tags "t1, t2"] [--doc-title "Title"]
+```
+
+- Exactly **one** of `--url` / `--file` is required.
+- `--url` fetches the URL (httpx; requires network egress), picks an extractor
+  from the URL extension or the response content-type, and records the URL as
+  provenance automatically.
+- `--file` ingests a local file; `--source-url` still records the originating
+  link (useful when a page needs cookie auth the standalone fetch cannot do:
+  fetch elsewhere, save, ingest with `--file --source-url`).
+- `--ingest-scope shared|private` routes to the canonical stores via the
+  `IngestionEngine` (scope reconciliation + the `SHARED_ORG` isolation guard
+  both apply). `private` is the **fail-closed default**.
+- `--store NAME` targets an **independent named database**, co-located with the
+  private embedded store and created on demand. It **takes precedence over**
+  `--ingest-scope` and is intentionally outside the shared/private isolation
+  model (a custom store is neither the org-shared nor the local-private KB).
+- `--source-url`/`--tags`/`--doc-title` prepend a small provenance chunk
+  (`Title` / `Source URL` / `Tags`) so a semantic hit surfaces the originating
+  link and tags.
+- **TLS & SSRF:** URL fetch trust resolves `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE`
+  then the system CA bundle (fail-closed). Redirects are followed but **every
+  hop is validated to reject loopback/link-local/private targets** (SSRF-via-
+  redirect guard). The discouraged `DOXTR_RAG_INGEST_INSECURE=1` disables both
+  TLS verification and the SSRF guard as a last resort.
+
+### Portable per-mount sidecar index (`mount-index` / `mount-watch`)
+
+External mounts (e.g. a `vault/`) rarely change but can hold hundreds of files.
+A **portable sidecar index** co-locates a prebuilt ChromaDB next to the files at
+`<mount>/.doxtr/chroma` (with a per-mount SHA-256 cache at
+`<mount>/.doxtr/mount-cache.db`) so the folder is **queryable without a
+`make html`**, and a Sphinx build only re-embeds files that actually changed.
+
+```bash
+# build/refresh a mount's sidecar (incremental, SHA-gated, prunes deletions)
+doxtr-rag --conf conf.py mount-index --mount-path "$(pwd)/vault"
+doxtr-rag --conf conf.py mount-index --all-mounts   # every configured mount
+
+# keep a mount's sidecar fresh in the background
+doxtr-rag --conf conf.py mount-watch --mount-path "$(pwd)/vault"
+doxtr-rag --conf conf.py mount-watch --mount-path "$(pwd)/vault" --once
+doxtr-rag --conf conf.py mount-watch --mount-path "$(pwd)/vault" --poll-interval 10
+```
+
+- `mount-watch` is **single-consumer**, guarded by a best-effort
+  `<mount>/.doxtr/mount.lock` (one writer per sidecar). It uses the optional
+  `watchdog` package for event-driven watching when installed, else **polls**
+  (default `5.0s`); `--once` does a single incremental pass and exits.
+- Sidecar servers run on **deterministic loopback ports** based at `8790`
+  (override `DOXTR_RAG_MOUNT_PORT_BASE`) and must be running for the query side
+  to reach a mount — a build (or `.tools/doxtr-rag-serve.py`) starts them and
+  publishes them into `.doxtr/endpoints.json` (the `"mounts"` array, see §6).
+- **Fail-closed scope:** a mount is `SHARED_ORG` only if it affirmatively
+  declares it in `rag_external_mounts`; otherwise `LOCAL_PRIVATE`.
+
 ## 9. Development & QA
 
 Run the full quality gate (what CI enforces):
@@ -473,10 +597,13 @@ weights) and skip gracefully elsewhere.
 
 - `tests/` — fast unit tests (schema, scrub, cache, harvester, extractors,
   security, audit, storage, pipeline, config, embedding) **plus** the
-  cross-language round-trip.
+  cross-language round-trip, the ad-hoc `ingest` path (`test_ingest.py`,
+  including the SSRF-redirect guard), the CLI subcommands (`test_cli_commands.py`)
+  and the portable per-mount sidecar index (`test_mount_index.py`).
 - `test_harness/` — a real Sphinx project (`conf.py`, `source/` with
   `source/`/`noter/`/`NDA/` mounts, `conf_overrides/`, `assertions.py`,
   `test_runner.py`) for integration/regression, mirroring the reference
   `doxtr-pdf-theme-core` harness.
 - `doxtr_rag/pi_extension/tests/` — the TypeScript `vitest` suite (scrub
-  parity, RRF, metadata inflation, dimension/model parity, offline fallback).
+  parity, RRF, metadata inflation, dimension/model parity, offline fallback,
+  and the per-mount sidecar query merge).

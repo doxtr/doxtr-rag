@@ -78,6 +78,7 @@ class Pipeline:
         self._serve_embed = serve_embed
         self._loopback_uris: dict[str, Optional[str]] = {"shared": None, "private": None}
         self._embed_uri: Optional[str] = None
+        self._mount_uris: dict[str, str] = {}
         self._xlink_scopes: dict[str, AccessControl] = {}
 
     @classmethod
@@ -115,7 +116,28 @@ class Pipeline:
             shared_loopback_uri=shared_uri, private_loopback_uri=private_uri
         )
         self._maybe_serve_embed()
+        self._serve_mount_sidecars()
         self._scan_mounts()
+
+    def _serve_mount_sidecars(self) -> None:
+        """Start loopback servers over each mount's portable sidecar store.
+
+        Makes newly-configured vaults queryable by the P6 JS client (which is
+        HTTP-only) the same way shared/private are. Mounts without a built
+        sidecar are skipped (they still get ingested into the canonical stores
+        by ``_scan_mounts``; the sidecar is the fast/portable path). The
+        servers intentionally OUTLIVE the build (see :meth:`_close`).
+        """
+        if not self._start_servers:
+            return
+        try:
+            from doxtr_rag.mount_index import serve_all_mounts
+
+            uris, servers = serve_all_mounts(self._config)
+            self._mount_uris = uris
+            self._servers.extend(servers)
+        except Exception as exc:  # noqa: BLE001 - never crash the build
+            logger.warning("doxtr-rag: could not serve mount sidecars: %s", exc)
 
     def _maybe_serve_embed(self) -> None:
         """Auto-start the bge-m3 embed server so the query side needs no manual
@@ -127,6 +149,17 @@ class Pipeline:
         if not self._start_servers or not self._serve_embed or self._engine is None:
             return
         provider = self._engine.provider
+        port = self._config.embed_port
+        # Reuse an embed server already listening on the stable port (e.g. from
+        # the standalone launcher or a prior build) rather than binding again.
+        from doxtr_rag.server import port_is_serving
+
+        if port_is_serving(port):
+            self._embed_uri = f"http://127.0.0.1:{port}/embed"
+            logger.info(
+                "[doxtr-rag] reusing running embed server on %s", self._embed_uri
+            )
+            return
         try:
             # Probe once so a weights-absent provider skips cleanly rather than
             # starting a server that errors on every request.
@@ -141,7 +174,7 @@ class Pipeline:
         try:
             from doxtr_rag.embed_server import EmbedServer
 
-            server = EmbedServer(host="127.0.0.1", port=0, provider=provider)
+            server = EmbedServer(host="127.0.0.1", port=port, provider=provider)
             server.start()
             self._servers.append(server)
             self._embed_uri = server.uri
@@ -149,15 +182,31 @@ class Pipeline:
             logger.warning("doxtr-rag: could not start embed server: %s", exc)
 
     def _maybe_serve(self, target: StoreTarget, scope_key: str) -> Optional[str]:
-        """Start a loopback Chroma server for an embedded store; return its URI."""
+        """Start (or reuse) a loopback Chroma server for an embedded store.
+
+        Binds the stable configured port for the scope and reuses an
+        already-running server on that port rather than spawning a duplicate,
+        so endpoints.json stays stable across builds.
+        """
         if target.mode != "embedded" or not self._start_servers:
             return None
+        port = (
+            self._config.shared_port
+            if scope_key == "shared"
+            else self._config.private_port
+        )
         try:
             from doxtr_rag.server import LoopbackChromaServer
 
-            server = LoopbackChromaServer(target.path or ".doxtr/chroma")
-            server.start()
+            server = LoopbackChromaServer(target.path or ".doxtr/chroma", port=port)
+            server.start(reuse_if_running=True)
             self._servers.append(server)
+            if server.reused:
+                logger.info(
+                    "[doxtr-rag] reusing running %s Chroma server on %s",
+                    scope_key,
+                    server.uri,
+                )
             return server.uri
         except Exception as exc:  # noqa: BLE001 - degrade gracefully
             logger.warning(
@@ -168,8 +217,6 @@ class Pipeline:
             return None
 
     def _scan_mounts(self) -> None:
-        from doxtr_rag.extractors import _sha256_file, scan_mount
-
         for mount in self._config.rag_external_mounts:
             if not isinstance(mount, dict):
                 continue
@@ -177,17 +224,77 @@ class Pipeline:
             if not path or not os.path.isdir(path):
                 continue
             scope = self._config.mount_scope(mount)
-            # Group extracted chunks per source file (external_file resource).
-            per_file: dict[str, list[DocumentChunk]] = {}
-            for chunk in scan_mount(path, scope):
-                per_file.setdefault(chunk.metadata["source_file"], []).append(chunk)
-            for src, chunks in per_file.items():
-                rid = f"external_file:{src}"
+            self._scan_one_mount(path, scope)
+
+    def _scan_one_mount(self, path: str, scope: AccessControl) -> None:
+        """Scan one external mount, reusing a per-mount sidecar cache.
+
+        The sidecar cache (``<mount>/.doxtr/mount-cache.db``, written by
+        ``doxtr-rag mount-index`` / ``mount-watch``) records each file's
+        SHA-256. When present, a file whose hash is unchanged is NOT re-read or
+        re-parsed here: its previously-recorded chunk ids are looked up in the
+        build cache and the resource is registered as unchanged so
+        ``_ingest_dirty_resources`` skips re-embedding it. This avoids
+        re-scanning hundreds of rarely-changing mount files on every build.
+
+        Only files that are new or whose hash changed are extracted. If the
+        sidecar is absent, the behaviour degrades to a full scan (the original
+        semantics), so nothing breaks without a sidecar.
+        """
+        from doxtr_rag.extractors import _sha256_file, extract_file
+        from doxtr_rag.mount_index import (
+            iter_supported_files,
+            resource_id_for_file,
+            sidecar_cache_path,
+        )
+
+        side_cache = None
+        side_path = sidecar_cache_path(path)
+        if os.path.isfile(side_path):
+            try:
+                side_cache = BuildCache(side_path)
+            except Exception as exc:  # noqa: BLE001 - degrade to full scan
+                logger.info(
+                    "[doxtr-rag] sidecar cache unreadable for %s (%s); full scan",
+                    path,
+                    exc,
+                )
+                side_cache = None
+
+        try:
+            for fpath in iter_supported_files(path):
+                rid = resource_id_for_file(fpath)
                 try:
-                    sha = _sha256_file(src)
+                    sha = _sha256_file(fpath)
                 except OSError:
                     sha = ""
-                self._add_resource(rid, "external_file", sha, chunks)
+                # Fast path: sidecar says this file is unchanged AND the build
+                # cache already has it at the same hash -> register as-is (no
+                # re-parse, no re-embed) so the vector store keeps its chunks.
+                if (
+                    side_cache is not None
+                    and not side_cache.is_dirty(rid, sha)
+                    and self._cache is not None
+                    and not self._cache.is_dirty(rid, sha)
+                ):
+                    self._seen_resource_ids.add(rid)
+                    continue
+                chunks = list(
+                    extract_file(
+                        fpath,
+                        scope,
+                        max_chunk_chars=self._config.rag_max_chunk_chars,
+                        chunk_overlap_chars=self._config.rag_chunk_overlap_chars,
+                    )
+                )
+                if chunks:
+                    self._add_resource(rid, "external_file", sha, chunks)
+        finally:
+            if side_cache is not None:
+                try:
+                    side_cache.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # -- event: doctree-resolved ----------------------------------------
     def doctree_resolved(self, doctree: Any, docname: str) -> None:
@@ -307,11 +414,15 @@ class Pipeline:
     def _write_endpoints(self) -> None:
         """Persist the resolved per-scope endpoints for the P6 TS process."""
         try:
+            from doxtr_rag.mount_index import build_mount_endpoints
+
+            mount_descriptors = build_mount_endpoints(self._config, self._mount_uris)
             descriptor = resolve_endpoints(
                 self._config,
                 shared_query_uri=self._loopback_uris.get("shared"),
                 private_query_uri=self._loopback_uris.get("private"),
                 embed_uri=self._embed_uri,
+                mount_descriptors=mount_descriptors,
             )
             path = os.path.join(
                 os.path.dirname(self._config.rag_cache_db) or ".", "endpoints.json"

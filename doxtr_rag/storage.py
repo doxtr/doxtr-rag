@@ -24,12 +24,14 @@ Key guarantees:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Optional
 
 from doxtr_rag.base_store import (
     BaseVectorStore,
     StoreAddress,
     address_from_config,
+    collection_name,
 )
 from doxtr_rag.config import SphinxRAGConfig, StoreTarget
 from doxtr_rag.embedding_provider import EmbeddingProvider
@@ -309,6 +311,78 @@ def _results_to_chunks(res: dict[str, Any]) -> list[DocumentChunk]:
     return chunks
 
 
+def open_named_store(
+    config: SphinxRAGConfig,
+    *,
+    database: str,
+    path: Optional[str] = None,
+    scope: AccessControl = AccessControl.LOCAL_PRIVATE,
+    writable: bool = True,
+) -> ChromaVectorStore:
+    """Public factory for an ad-hoc, independently-addressed vector store.
+
+    This is the single, documented seam for opening a store outside the
+    canonical shared/private pair (e.g. ``doxtr-rag ingest --store NAME`` and
+    the per-mount portable sidecars). Both callers previously hand-built the
+    same ``StoreTarget`` + ``StoreAddress`` + :class:`ChromaVectorStore`
+    (with a directly-instantiated :class:`EmbeddingProvider`); routing them
+    through one factory means a child theme can override store construction in
+    exactly one place and keeps embedding parity honest.
+
+    Args:
+        config: The resolved Sphinx RAG config (tenant, model revision,
+            embedding dimension, and — when ``path`` is omitted — the private
+            store target that the named database is co-located with).
+        database: The ChromaDB database name (isolated from shared/private).
+        path: An explicit on-disk path for an embedded store (used by mount
+            sidecars: ``<mount>/.doxtr/chroma``). When ``None`` the store is
+            co-located with the private embedded store (or private HTTP server).
+        scope: The scope the store is opened as. Defaults to ``LOCAL_PRIVATE``
+            — a custom/sidecar store is neither the org-shared nor the
+            canonical local-private KB, and the SHARED_ORG isolation guard only
+            fires for a store opened as shared, so this keeps writes fail-closed.
+        writable: Whether the store is opened read-write (created on demand) or
+            read-only.
+    """
+    tenant = config.rag_store_tenant
+    collection = collection_name(config.model_revision, config.embedding_dimension)
+    if path is not None:
+        target = StoreTarget(
+            mode="embedded",
+            uri=None,
+            path=path,
+            tenant=tenant,
+            database=database,
+            ssl=False,
+            headers={},
+            writable=writable,
+        )
+    else:
+        private = config.local_target()
+        target = StoreTarget(
+            mode=private.mode,
+            uri=private.uri,
+            path=private.path,
+            tenant=private.tenant,
+            database=database,
+            ssl=private.ssl,
+            headers=private.headers,
+            writable=writable,
+        )
+        tenant = private.tenant
+    address = StoreAddress(
+        tenant=tenant,
+        database=database,
+        collection=collection,
+    )
+    return ChromaVectorStore(
+        target=target,
+        address=address,
+        provider=EmbeddingProvider(),
+        scope=scope,
+    )
+
+
 class IngestionEngine:
     """Coordinates dual-store ingestion with final scope reconciliation.
 
@@ -454,6 +528,7 @@ def resolve_endpoints(
     shared_query_uri: Optional[str] = None,
     private_query_uri: Optional[str] = None,
     embed_uri: Optional[str] = None,
+    mount_descriptors: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Build the resolved per-scope endpoint descriptor for P6 (endpoints.json).
 
@@ -462,16 +537,30 @@ def resolve_endpoints(
     ``*_query_uri`` overrides carry the loopback URI when a store is embedded
     (embedded stores are served over a loopback HTTP server for the JS client).
     Secrets are NEVER written here — only header KEY names are referenced.
+
+    ``mount_descriptors`` is a list of fully-formed mount endpoint entries
+    (each ``{path, scope, mode, host, port, ssl, tenant, database, collection,
+    header_keys}``) built by the caller via
+    :func:`doxtr_rag.mount_index.build_mount_endpoints`. This module only
+    *formats* the descriptor it is given — it does not reach into the mount
+    sidecar implementation — so a child theme can swap mount addressing without
+    patching ``storage.py``. Absent/empty ``mount_descriptors`` publishes an
+    empty ``"mounts"`` array (backward compatible: a query extension reading an
+    ``endpoints.json`` with no served mounts behaves exactly as before).
     """
     from urllib.parse import urlparse
+
+    def _parse(uri: Optional[str], default_port: int) -> tuple[str, int, bool]:
+        parsed = urlparse(uri) if uri else None
+        ssl = bool(parsed and parsed.scheme == "https")
+        host = (parsed.hostname if parsed else None) or "127.0.0.1"
+        port = (parsed.port if parsed else None) or (443 if ssl else default_port)
+        return host, port, ssl
 
     def _one(scope: AccessControl, target: StoreTarget, query_uri: Optional[str]) -> dict[str, Any]:
         addr = address_from_config(scope, config)
         uri = query_uri or target.uri or ""
-        parsed = urlparse(uri) if uri else None
-        ssl = bool(parsed and parsed.scheme == "https")
-        host = (parsed.hostname if parsed else None) or "127.0.0.1"
-        port = (parsed.port if parsed else None) or (443 if ssl else 8000)
+        host, port, ssl = _parse(uri, 8000)
         return {
             "mode": target.mode,
             "host": host,
@@ -482,6 +571,8 @@ def resolve_endpoints(
             "collection": addr.collection,
             "header_keys": sorted(target.headers.keys()),
         }
+
+    mounts: list[dict[str, Any]] = list(mount_descriptors or [])
 
     return {
         "embedding": {
@@ -494,4 +585,5 @@ def resolve_endpoints(
         },
         "shared": _one(AccessControl.SHARED_ORG, config.shared_target(), shared_query_uri),
         "private": _one(AccessControl.LOCAL_PRIVATE, config.local_target(), private_query_uri),
+        "mounts": mounts,
     }

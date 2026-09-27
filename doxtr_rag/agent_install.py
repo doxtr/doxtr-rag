@@ -36,12 +36,37 @@ from typing import Optional
 SUPPORTED_AGENTS = ("pi",)
 PLANNED_AGENTS = ("opencode", "claude", "cursor", "codex")
 
+def _default_embed_url() -> str:
+    """Return the fallback query-time embed URL from the stable embed port.
+
+    Derived from the same stable port the Sphinx build and the standalone
+    launcher bind (``SphinxRAGConfig.rag_embed_port`` / ``DOXTR_RAG_EMBED_PORT``)
+    so the installer, the build and the launcher can never drift onto different
+    ports. It is only a FALLBACK: the Pi extension prefers the ``embed_url``
+    published in ``.doxtr/endpoints.json`` when present.
+    """
+    try:
+        from doxtr_rag.config import SphinxRAGConfig
+
+        port = SphinxRAGConfig().embed_port
+    except Exception:  # noqa: BLE001 - never let installer defaults crash
+        import os as _os
+
+        try:
+            port = int(_os.environ.get("DOXTR_RAG_EMBED_PORT", "8789"))
+        except ValueError:
+            port = 8789
+    return f"http://127.0.0.1:{port}/embed"
+
+
 #: Reactor-tailored defaults for the query-time environment.
 REACTOR_DEFAULTS: dict[str, str] = {
     # Pre-baked bge-m3 ONNX weights location in the reactor image / mounted cache.
     "DOXTR_RAG_BGE_M3_ONNX_DIR": "/opt/models/bge-m3",
-    # Query-time embedding endpoint (must serve the pinned bge-m3 / 1024-dim).
-    "DOXTR_RAG_EMBED_URL": "http://127.0.0.1:8519/embed",
+    # Query-time embedding endpoint fallback (must serve the pinned bge-m3 /
+    # 1024-dim). Derived from the stable embed port; endpoints.json wins when
+    # present.
+    "DOXTR_RAG_EMBED_URL": _default_embed_url(),
     # Resolved store endpoints written by a Sphinx build (relative to the repo).
     "DOXTR_RAG_ENDPOINTS": ".doxtr/endpoints.json",
 }
