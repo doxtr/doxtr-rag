@@ -2,21 +2,21 @@
 xlink
 *****
 
-The sphinxcontrib-xlink extension allows you to create links to other documents in your documentation. It provides a simple syntax for creating links, and it also allows you to create links to specific sections of other documents.
+The doxtr-xlink extension allows you to create links to other documents in your documentation. It provides a simple syntax for creating links, and it also allows you to create links to specific sections of other documents.
 
 It generates support files for the auto-complete feature of Visual Studio Code, which allows you to quickly find and link to other documents in your documentation.
 
 Configuration
 =============
 
-To use the :code:`sphinxcontrib-xlink` extension, you need to add it to the list of extensions in your :file:`conf.py` file:
+To use the :code:`doxtr-xlink` extension, you need to add it to the list of extensions in your :file:`conf.py` file:
 
 .. code-block:: python
-   :caption: conf.py options for sphinxcontrib-xlink
+   :caption: conf.py options for doxtr-xlink
 
     extensions = [
         ...
-        "sphinxcontrib.xlink",
+        "doxtr_xlink",
         ...
     ]
 

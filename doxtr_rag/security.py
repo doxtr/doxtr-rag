@@ -13,7 +13,7 @@ All URLs are scrubbed with the shared :func:`~doxtr_rag.scrub.scrub` before any
 logging or auditing. Scope is **provisional**; P5 finalizes via
 ``most_restrictive``.
 
-**xlink integration note (spike):** ``sphinxcontrib-xlink`` resolves entries to
+**xlink integration note (spike):** ``doxtr-xlink`` resolves entries to
 ``id :: Title :: URL :: tags`` and exposes the target URL, not the raw API
 payload. The classifier therefore fetches the API payload itself from the
 resolved URL.

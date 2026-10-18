@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sphinx.application import Sphinx

@@ -6,6 +6,19 @@ project aims to follow semantic versioning once it reaches `1.0.0`.
 
 ## [Unreleased]
 
+## [0.2.0]
+
+### Changed
+- **Migrated the xlink dependency from the unmaintained `sphinxcontrib-xlink`
+  to `doxtr-xlink`** (`>=2.0`). The replacement preserves the same `.xlink`
+  entry format (`id :: Title :: URL :: tags`), the `:xlink:` role, and the
+  `xlink-list` directive, and continues to resolve entries to a target URL
+  (not a raw API payload) — so the security classifier's provisional-scope
+  spike contract is unchanged. The Sphinx extension string changes from
+  `"sphinxcontrib.xlink"` to `"doxtr_xlink"` (new import module name). Note:
+  `doxtr-xlink` 2.0 aborts the build if `.rst` files live inside a `.xlink`
+  metadata directory (they must be renamed to `.rsti`).
+
 ## [0.1.2]
 
 ### Added
